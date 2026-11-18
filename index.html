@@ -189,10 +189,12 @@
       box-shadow: 0 2px 8px rgba(201, 168, 124, 0.35);
     }
 
-    .slot.past {
+    .slot.past, .slot.booked {
       opacity: 0.35;
       cursor: not-allowed;
       pointer-events: none;
+      background: #e2dcd4;
+      color: #777;
     }
 
     /* Booking form */
@@ -366,7 +368,6 @@
       to { transform: rotate(360deg); }
     }
 
-    /* Responsive */
     @media (max-width: 480px) {
       header h1 {
         font-size: 1.35rem;
@@ -401,14 +402,10 @@
       <h2>Időpont foglalása</h2>
       <div class="selected-info" id="selectedInfo"></div>
 
-      <form id="bookingForm" action="https://formsubmit.co/szucsvidaistvan@gmail.com" method="POST">
-        <!-- FormSubmit beállítások -->
-        <input type="hidden" name="_subject" value="Új időpontkérés - Eysan Home Fodrászat">
-        <input type="hidden" name="_template" value="table">
-        <input type="hidden" name="_captcha" value="false">
-        <input type="hidden" name="_next" value="">
-        <input type="hidden" name="Időpont" id="hiddenSlot">
-        <input type="hidden" name="Nap" id="hiddenDay">
+      <form id="bookingForm">
+        <input type="hidden" id="hiddenSlot">
+        <input type="hidden" id="hiddenDate">
+        <input type="hidden" id="hiddenDayName">
 
         <div class="form-group">
           <label for="name">Név *</label>
@@ -441,7 +438,7 @@
     <div class="success-panel" id="successPanel">
       <div class="success-icon">✓</div>
       <h2>Kérésed elküldve!</h2>
-      <p>Hamarosan visszajelzünk az email címedre vagy telefonon.<br>
+      <p>Hamarosan értesítünk az e-mail címeden a foglalás jóváhagyásáról.<br>
       Köszönjük, hogy minket választottál!</p>
       <br>
       <button class="btn btn-primary" style="max-width: 200px; margin: 0 auto;" onclick="location.reload()">Új foglalás</button>
@@ -457,16 +454,17 @@
   </div>
 
   <script>
-    // ========== Beállítások ==========
+    // == IDE ÍRD BE A SAJÁT GOOGLE APPS SCRIPT WEB APP URL-EDET! ==
+    const SCRIPT_URL = "ITT_ADD_MEG_A_GOOGLE_APPS_SCRIPT_URL_LINKET";
+
     const DAYS_HU = ['Vasárnap', 'Hétfő', 'Kedd', 'Szerda', 'Csütörtök', 'Péntek', 'Szombat'];
-    const DAYS_SHORT = ['V', 'H', 'K', 'Sze', 'Cs', 'P', 'Szo'];
     const TIMES = ['10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00'];
-    const WORK_DAYS = [1, 2, 3, 4, 5, 6]; // Hétfő–Szombat
+    const WORK_DAYS = [1, 2, 3, 4, 5, 6];
 
     let currentMonday = getMonday(new Date());
     let selectedSlot = null;
+    let blockedSlots = []; // Táblázatból letöltött foglalt/tiltott sávok
 
-    // ========== Segédfüggvények ==========
     function getMonday(d) {
       const date = new Date(d);
       const day = date.getDay();
@@ -484,6 +482,13 @@
       return date.toLocaleDateString('hu-HU', { year: 'numeric', month: 'long', day: 'numeric' });
     }
 
+    function toIsoDate(date) {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
     function isPast(date, time) {
       const now = new Date();
       const [h, m] = time.split(':').map(Number);
@@ -498,13 +503,24 @@
              d1.getDate() === d2.getDate();
     }
 
-    // ========== Naptár kirajzolása ==========
+    // Foglalt/tiltott adatok lekérése a Google Táblázatból
+    async function fetchBlockedSlots() {
+      if (!SCRIPT_URL || SCRIPT_URL.includes("ITT_ADD_MEG")) return;
+      try {
+        const response = await fetch(SCRIPT_URL);
+        blockedSlots = await response.json();
+        renderWeek();
+      } catch (err) {
+        console.error("Nem sikerült lekérni a foglalt időpontokat:", err);
+      }
+    }
+
     function renderWeek() {
       const container = document.getElementById('daysContainer');
       container.innerHTML = '';
 
       const endOfWeek = new Date(currentMonday);
-      endOfWeek.setDate(endOfWeek.getDate() + 5); // Szombat
+      endOfWeek.setDate(endOfWeek.getDate() + 5);
 
       document.getElementById('weekRange').textContent =
         `${formatDate(currentMonday)} – ${formatDate(endOfWeek)}`;
@@ -519,6 +535,7 @@
         if (!WORK_DAYS.includes(dayOfWeek)) continue;
 
         const isToday = isSameDay(dayDate, today);
+        const dateIso = toIsoDate(dayDate);
 
         const card = document.createElement('div');
         card.className = 'day-card';
@@ -528,20 +545,30 @@
             <span class="day-name">${DAYS_HU[dayOfWeek]}${isToday ? ' (ma)' : ''}</span>
             <span class="day-date">${formatDate(dayDate)}</span>
           </div>
-          <div class="slots" data-date="${dayDate.toISOString()}"></div>
+          <div class="slots" data-date="${dateIso}"></div>
         `;
 
         const slotsEl = card.querySelector('.slots');
 
         TIMES.forEach(time => {
           const past = isPast(dayDate, time);
+          
+          // Ellenőrzés, hogy foglalt vagy letiltott-e a táblázat alapján
+          const isBookedOrBlocked = blockedSlots.some(b => 
+            b.date === dateIso && (b.time === time || b.time === 'EGÉSZ NAP' || b.time.toLowerCase() === 'egész nap')
+          );
+
           const btn = document.createElement('button');
           btn.type = 'button';
-          btn.className = 'slot' + (past ? ' past' : '');
+          btn.className = 'slot' + (past ? ' past' : '') + (isBookedOrBlocked ? ' booked' : '');
           btn.textContent = time;
-          btn.disabled = past;
+          btn.disabled = past || isBookedOrBlocked;
 
-          if (!past) {
+          if (isBookedOrBlocked && !past) {
+            btn.title = "Ez az időpont már foglalt vagy letiltva";
+          }
+
+          if (!past && !isBookedOrBlocked) {
             btn.addEventListener('click', () => selectSlot(dayDate, time, btn));
           }
 
@@ -552,9 +579,7 @@
       }
     }
 
-    // ========== Időpont kiválasztása ==========
     function selectSlot(date, time, btn) {
-      // Előző kijelölés törlése
       document.querySelectorAll('.slot.selected').forEach(el => el.classList.remove('selected'));
       btn.classList.add('selected');
 
@@ -565,45 +590,58 @@
         `${dayName}, ${formatFullDate(date)} – ${time}`;
 
       document.getElementById('hiddenSlot').value = time;
-      document.getElementById('hiddenDay').value = `${dayName}, ${formatFullDate(date)}`;
+      document.getElementById('hiddenDate').value = toIsoDate(date);
+      document.getElementById('hiddenDayName').value = `${dayName}, ${formatFullDate(date)}`;
 
       document.getElementById('bookingPanel').classList.add('active');
       document.getElementById('successPanel').classList.remove('active');
 
-      // Görgetés a formhoz
       setTimeout(() => {
         document.getElementById('bookingPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 100);
     }
 
-    // ========== Form kezelés ==========
     document.getElementById('cancelBtn').addEventListener('click', () => {
       document.getElementById('bookingPanel').classList.remove('active');
       document.querySelectorAll('.slot.selected').forEach(el => el.classList.remove('selected'));
       selectedSlot = null;
     });
 
-    document.getElementById('bookingForm').addEventListener('submit', function(e) {
+    // Foglalás elküldése közvetlenül a Google Táblázatba
+    document.getElementById('bookingForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
       const btn = document.getElementById('submitBtn');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>Küldés...';
 
-      // A form a formsubmit.co-ra megy, az automatikusan kezeli
-      // A _next-et dinamikusan állítjuk, hogy visszatérjen
-      const nextUrl = window.location.href.split('?')[0] + '?success=1';
-      this.querySelector('input[name="_next"]').value = nextUrl;
+      const payload = {
+        date: document.getElementById('hiddenDate').value,
+        time: document.getElementById('hiddenSlot').value,
+        name: document.getElementById('name').value,
+        phone: document.getElementById('phone').value,
+        email: document.getElementById('email').value,
+        note: document.getElementById('note').value
+      };
+
+      try {
+        await fetch(SCRIPT_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        document.getElementById('bookingPanel').classList.remove('active');
+        document.getElementById('daysContainer').style.display = 'none';
+        document.querySelector('.week-nav').style.display = 'none';
+        document.getElementById('successPanel').classList.add('active');
+      } catch (err) {
+        alert("Hiba történt a küldés során. Kérlek próbáld újra!");
+        btn.disabled = false;
+        btn.innerHTML = 'Időpont kérése';
+      }
     });
 
-    // Sikeres küldés után
-    if (window.location.search.includes('success=1')) {
-      document.getElementById('daysContainer').style.display = 'none';
-      document.querySelector('.week-nav').style.display = 'none';
-      document.getElementById('successPanel').classList.add('active');
-      // URL tisztítása
-      history.replaceState(null, '', window.location.pathname);
-    }
-
-    // ========== Hét váltás ==========
     document.getElementById('prevWeek').addEventListener('click', () => {
       currentMonday.setDate(currentMonday.getDate() - 7);
       renderWeek();
@@ -616,8 +654,8 @@
       document.getElementById('bookingPanel').classList.remove('active');
     });
 
-    // Indítás
-    renderWeek();
+    // Indításkor lekérjük a tiltásokat/foglalásokat és kirajzoljuk a naptárat
+    fetchBlockedSlots();
   </script>
 </body>
 </html>
